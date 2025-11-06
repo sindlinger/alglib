@@ -1,0 +1,55 @@
+pipe_name: "\\.\pipe\alglib-wave_pipe"
+functions:
+  - name: FFT
+    params:
+      - { name: series_json, type: string }
+      - { name: window, type: string }
+  - name: IFFT
+    params:
+      - { name: spectrum_json, type: string }
+  - name: WindowHann
+    params:
+      - { name: series_json, type: string }
+  - name: Bandpass
+    params:
+      - { name: series_json, type: string }
+      - { name: f_low, type: double }
+      - { name: f_high, type: double }
+  - name: Lowpass
+    params:
+      - { name: series_json, type: string }
+      - { name: cutoff, type: double }
+  - name: Highpass
+    params:
+      - { name: series_json, type: string }
+      - { name: cutoff, type: double }
+  - name: Notch
+    params:
+      - { name: series_json, type: string }
+      - { name: f0, type: double }
+  - name: Spectrogram
+    params:
+      - { name: series_json, type: string }
+      - { name: nfft, type: int }
+  - name: WelchPSD
+    params:
+      - { name: series_json, type: string }
+      - { name: nperseg, type: int }
+  - name: Hilbert
+    params:
+      - { name: series_json, type: string }
+  - name: PeakDetect
+    params:
+      - { name: series_json, type: string }
+      - { name: threshold, type: double }
+  - name: Resample
+    params:
+      - { name: series_json, type: string }
+      - { name: new_rate, type: double }
+  - name: Detrend
+    params:
+      - { name: series_json, type: string }
+  - name: Normalize
+    params:
+      - { name: series_json, type: string }
+

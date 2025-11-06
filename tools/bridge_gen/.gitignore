@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# Build outputs
+/build*/
+/dist*/
+*.dll
+*.pdb
+*.lib
+*.exp
+
+# Generated files (optional)
+# /mnt/c/mql5/MQL5/alglib/src/alglib_gpu/exports_ops_generated.cpp
+# /mnt/c/mql5/MQL5/Include/pipe/AlglibOps.mqh
