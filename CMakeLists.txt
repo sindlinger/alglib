@@ -114,7 +114,8 @@ if(ALGLIB_GPU_ENABLE_CUDA)
     src/dll_core/CudaKernels.cu)
 endif()
 
-set_target_properties(alglib_gpu PROPERTIES OUTPUT_NAME "alglib")
+# Bridge DLL name
+set_target_properties(alglib_gpu PROPERTIES OUTPUT_NAME "alglib_bridge")
 
 target_include_directories(alglib_gpu
   PRIVATE
