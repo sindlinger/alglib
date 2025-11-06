@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 mtcli.py — MetaTrader helper CLI for ALGLIB bridge
 
 Commands:
@@ -26,6 +26,13 @@ import argparse, os, sys, subprocess, hashlib, shutil, datetime, platform
 def is_windows():
     return platform.system().lower().startswith('win')
 
+def is_wsl():
+    try:
+        # typical WSL indicator
+        return 'microsoft' in platform.uname().release.lower() or 'WSL_DISTRO_NAME' in os.environ
+    except Exception:
+        return False
+
 
 def repo_root_from_here():
     here = os.path.abspath(os.path.dirname(__file__))
@@ -51,6 +58,20 @@ def terminal_dirs():
             if os.path.isdir(base):
                 for name in os.listdir(base):
                     p = os.path.join(base, name)
+                    if os.path.isdir(p):
+                        libs = os.path.join(p, 'MQL5', 'Libraries')
+                        if os.path.isdir(libs):
+                            dirs.append({'id': name, 'root': p, 'libs': libs})
+    elif is_wsl():
+        # Fallback scan on Windows drive from WSL
+        base_users = '/mnt/c/Users'
+        if os.path.isdir(base_users):
+            for user in os.listdir(base_users):
+                tbase = os.path.join(base_users, user, 'AppData', 'Roaming', 'MetaQuotes', 'Terminal')
+                if not os.path.isdir(tbase):
+                    continue
+                for name in os.listdir(tbase):
+                    p = os.path.join(tbase, name)
                     if os.path.isdir(p):
                         libs = os.path.join(p, 'MQL5', 'Libraries')
                         if os.path.isdir(libs):
@@ -189,10 +210,8 @@ def print_table(rows, headers):
 
 
 def cmd_deploy(args):
-    if not is_windows():
-        print('deploy only implemented for Windows.')
-        return 1
-    if not check_admin_windows():
+    # On Windows we check admin; on WSL we proceed with best-effort
+    if is_windows() and not check_admin_windows():
         print('ERROR: deploy requires Administrator (elevated) shell.')
         return 2
 
@@ -221,7 +240,14 @@ def cmd_deploy(args):
     # Kill processes
     if not args.no_kill:
         print('Stopping Terminal/MetaEditor/Service...')
-        kill_processes(['terminal64.exe', 'terminal.exe', 'metaeditor64.exe', 'metaeditor.exe', 'alglib_service.exe'])
+        if is_windows():
+            kill_processes(['terminal64.exe', 'terminal.exe', 'metaeditor64.exe', 'metaeditor.exe', 'alglib_service.exe'])
+        elif is_wsl():
+            # try via powershell.exe
+            try:
+                run(['powershell.exe','-NoProfile','-Command','taskkill /F /IM terminal64.exe; taskkill /F /IM terminal.exe; taskkill /F /IM metaeditor64.exe; taskkill /F /IM metaeditor.exe; taskkill /F /IM alglib_service.exe'], check=False)
+            except Exception:
+                pass
 
     # Destinations
     tdirs = terminal_dirs()
@@ -307,10 +333,8 @@ def restore_from_recycle_bin(dst_path):
 
 
 def cmd_undeploy(args):
-    if not is_windows():
-        print('undeploy only implemented for Windows.')
-        return 1
-    if not check_admin_windows():
+    # On Windows we check admin; on WSL we proceed best-effort
+    if is_windows() and not check_admin_windows():
         print('ERROR: undeploy may require Administrator (elevated) shell for process kill/copy.')
     root = args.root or repo_root_from_here()
     files = args.files or ['alglib_bridge.dll']

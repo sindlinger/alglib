@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 Bridge Wizard (terminal) — seleciona operações de domínio da frequência
 Gera:
  - bridge_mql5/bridge/exports_generated.cpp (exports tipados no DLL)

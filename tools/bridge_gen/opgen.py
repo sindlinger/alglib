@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 opgen.py — Gerador de exports (DLL) e .mqh de alto nível para o ALGLIB bridge
 
 Lê src/alglib_gpu/alglib_pipe_messages.h, coleta enum Operation { NAME = code, ... }.
