@@ -226,13 +226,20 @@ def cmd_deploy(args):
             return 3
         srcs.append(p)
 
-    # freshness check
+    # Always show source file metadata (name, bytes, modified, sha) and keep for verification
+    src_meta = []
+    src_hash_by_name = {}
+    for s in srcs:
+        st = os.stat(s)
+        h = sha256_of(s)
+        src_meta.append([os.path.basename(s), str(st.st_size), fmt_dt(st.st_mtime), h[:16], s])
+        src_hash_by_name[os.path.basename(s)] = h
+    print('\nSource files:')
+    print_table(src_meta, headers=['File','Bytes','Modified','SHA256(16)','Path'])
+
+    # freshness check/prompt unless forced
     if not args.yes:
-        print('About to deploy these files:')
-        for s in srcs:
-            st = os.stat(s)
-            print(f"- {os.path.basename(s)}  {fmt_dt(st.st_mtime)}  size={st.st_size}")
-        ans = input('Proceed to deploy? [y/N] ').strip().lower()
+        ans = input('\nProceed to deploy? [y/N] ').strip().lower()
         if ans not in ('y', 'yes'):
             print('Aborted.')
             return 0
@@ -250,7 +257,10 @@ def cmd_deploy(args):
                 pass
 
     # Destinations
-    tdirs = terminal_dirs()
+    if getattr(args, 'libs', None):
+        tdirs = [{'id': f'manual{idx+1}', 'root': os.path.dirname(os.path.dirname(p)), 'libs': p} for idx, p in enumerate(args.libs)]
+    else:
+        tdirs = terminal_dirs()
     if not tdirs:
         print('No Terminal dirs found.')
         return 4
@@ -297,12 +307,21 @@ def cmd_deploy(args):
                     send_to_trash(dst)
             shutil.copy2(s, dst)
             st = os.stat(dst)
+            d_hash = sha256_of(dst)
+            s_hash = src_hash_by_name.get(os.path.basename(s), '')
+            verified = 'OK' if d_hash == s_hash else 'FAIL'
             rows.append([
-                d['id'], os.path.basename(dst), fmt_dt(st.st_ctime), fmt_dt(st.st_mtime), str(st.st_size), sha256_of(dst)[:16], d['libs']
+                d['id'], os.path.basename(dst), fmt_dt(st.st_ctime), fmt_dt(st.st_mtime), str(st.st_size), d_hash[:16], verified, d['libs']
             ])
 
-    print('\nDeployed files:')
-    print_table(rows, headers=['TerminalID','File','Created','Modified','Bytes','SHA256(16)','Destination'])
+    print('\nDeployed files (verification):')
+    print_table(rows, headers=['TerminalID','File','Created','Modified','Bytes','SHA256(16)','Verified','Destination'])
+    # Summary
+    fails = sum(1 for r in rows if r[6] != 'OK')
+    if fails == 0:
+        print(f"\nSummary: {len(rows)} file copies verified OK across {len(targets)} Terminal(s).")
+    else:
+        print(f"\nSummary: {fails} verification failure(s) out of {len(rows)} copies.")
     return 0
 
 
@@ -416,6 +435,7 @@ def main():
     p.add_argument('--files', nargs='+', help='Files to copy (default: dist-wave/alglib_bridge.dll)')
     p.add_argument('--terminal-id', help='Specific Terminal ID (default: all)')
     p.add_argument('--all', action='store_true', help='Deploy to all Terminals')
+    p.add_argument('--libs', action='append', help='Explicit MQL5\\Libraries directory (repeatable). Overrides detection when present')
     p.add_argument('--yes', action='store_true', help='Do not prompt for confirmation')
     p.add_argument('--no-kill', action='store_true', help='Do not kill processes before copying')
     p.add_argument('--trash', action='store_true', help='Send replaced files to Recycle Bin (requires send2trash, optional)')
@@ -429,6 +449,142 @@ def main():
     p.add_argument('--from-recycle', action='store_true', help='Attempt restore from Recycle Bin (best effort)')
     p.add_argument('--no-kill', action='store_true', help='Do not kill processes before restore')
     p.set_defaults(func=cmd_undeploy)
+
+    # ---- start (interactive wizard) ----
+    p = sub.add_parser('start', help='Interactive setup: pick Terminal, prepare EA, generate preset, build, deploy, deploy agents')
+    p.add_argument('--project', help='Project name (default: GPU_LegacyWave1.0.4)')
+    p.add_argument('--ea-name', default='CommandListener', help='EA name without extension (default: CommandListener)')
+    p.add_argument('--yes', action='store_true', help='Assume yes to prompts when safe')
+    def cmd_start(args):
+        # 1) Project name
+        project = args.project or (input('Project name [GPU_LegacyWave1.0.4]: ').strip() or 'GPU_LegacyWave1.0.4')
+
+        # 2) Pick Terminal (MQL5\Libraries)
+        detected = terminal_dirs()
+        print('\nTerminals detected:')
+        for i, d in enumerate(detected, 1):
+            print(f" {i}. id={d['id']} libs={d['libs']}")
+        print(f" {len(detected)+1}. Other... (enter a custom MQL5\\Libraries path)")
+        choice = input(f'Select [1-{len(detected)+1}]: ').strip()
+        try:
+            idx = int(choice)
+        except Exception:
+            idx = len(detected)+1
+        if idx==len(detected)+1:
+            libs = input('Enter full path to MQL5\\Libraries: ').strip()
+            if libs.startswith('~'):
+                libs = os.path.expanduser(libs)
+            if not os.path.isdir(libs):
+                print('ERROR: invalid Libraries path. Aborting.')
+                return 2
+            terminal = {'id':'manual','root': os.path.dirname(os.path.dirname(libs)), 'libs': libs}
+        else:
+            terminal = detected[idx-1]
+        mql5_root = os.path.dirname(terminal['libs'])
+        experts_dir = os.path.join(mql5_root, 'Experts', project)
+        os.makedirs(experts_dir, exist_ok=True)
+
+        # 3) Prepare and compile EA
+        ea_base = args.ea_name
+        ea_mq5 = os.path.join(experts_dir, ea_base + '.mq5')
+        if not os.path.isfile(ea_mq5):
+            # minimal EA template
+            tpl = (
+                '#property strict\n'
+                f'// Auto-generated by mtcli start for project {project}\n'
+                '#include <WinUser32.mqh>\n'
+                'int OnInit(){ Print("CommandListener init"); return(INIT_SUCCEEDED);}\n'
+                'void OnTick(){}\n'
+                'void OnChartEvent(const int id,const long &l,const double &d,const string &s){ PrintFormat("EVT %d %s", id, s); }\n'
+            )
+            with open(ea_mq5, 'w', encoding='utf-8') as f:
+                f.write(tpl)
+            print('Created EA:', ea_mq5)
+
+        # locate MetaEditor
+        meta = os.environ.get('METAEDITOR','')
+        if not meta:
+            # try powershell
+            try:
+                r = subprocess.run(['powershell','-NoProfile','-Command', "(Get-Command metaeditor64.exe -ErrorAction SilentlyContinue).Source"], capture_output=True, text=True)
+                cand = (r.stdout or '').strip()
+                if not cand:
+                    r = subprocess.run(['powershell','-NoProfile','-Command', "Get-ChildItem 'C:\\Program Files*' -Recurse -Filter metaeditor64.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName"], capture_output=True, text=True)
+                    cand = (r.stdout or '').strip()
+                meta = cand
+            except Exception:
+                meta = ''
+        if not meta or not os.path.isfile(meta):
+            print('WARN: MetaEditor not found automatically. Provide full path (ex.: C:\\Program Files\\MetaTrader 5\\metaeditor64.exe)')
+            meta = input('MetaEditor path: ').strip()
+        if not os.path.isfile(meta):
+            print('ERROR: MetaEditor path invalid. Aborting.')
+            return 3
+
+        # compile EA
+        log_dir = os.path.join(repo_root_from_here(), 'tools', 'mtcli_build')
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, f'compile_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+        # Use powershell for consistency
+        cmd = ['powershell','-NoProfile','-Command', f'& "{meta}" /log:"{log_path}" /compile:"{ea_mq5}"']
+        run(cmd, check=False)
+        ea_ex5 = os.path.join(experts_dir, ea_base + '.ex5')
+        if not os.path.isfile(ea_ex5):
+            print('ERROR: compile failed. See log:', log_path)
+            return 4
+        print('EA compiled OK:', ea_ex5)
+
+        # create template and config
+        tpl_dir = os.path.join(mql5_root, 'Profiles', 'Templates')
+        os.makedirs(tpl_dir, exist_ok=True)
+        tpl_path = os.path.join(tpl_dir, project + '.tpl')
+        if not os.path.isfile(tpl_path):
+            with open(tpl_path, 'w', encoding='utf-8') as f:
+                f.write('; template placeholder for '+project+'\n')
+        cfg_dir = os.path.join(terminal['root'], 'config')
+        os.makedirs(cfg_dir, exist_ok=True)
+        cfg_path = os.path.join(cfg_dir, f'terminal_{project}.ini')
+        if not os.path.isfile(cfg_path):
+            with open(cfg_path, 'w', encoding='utf-8') as f:
+                f.write('[Common]\nEnableAutoTrading=1\nAllowDllImport=1\n')
+        print('Template and config prepared.')
+
+        # 4) Generate preset via opgen
+        root = repo_root_from_here()
+        opgen = os.path.join(root, 'tools', 'bridge_gen', 'opgen.py')
+        if os.path.isfile(opgen):
+            run([sys.executable, opgen, '--root', root, '--preset', project, '--use-preset-selection'])
+        else:
+            print('WARN: opgen.py not found; skipping preset regeneration.')
+
+        # 5) Build
+        bargs = argparse.Namespace(root=root, build_dir=None, arch='x64', config='Release', targets=['alglib_bridge'], parallel=os.cpu_count() or 8, preset=project, use_preset_selection=True, no_union_presets=False, extra=[])
+        cmd_build(bargs)
+
+        # 6) Deploy bridge to selected Terminal only
+        dw = dist_wave_dir(root)
+        bridge = os.path.join(dw, 'alglib_bridge.dll')
+        dargs = argparse.Namespace(root=root, files=[bridge], terminal_id=None, all=False, libs=[terminal['libs']], yes=True, no_kill=False, trash=False)
+        cmd_deploy(dargs)
+
+        # 7) Deploy agents (copy service)
+        service = os.path.join(dw, 'alglib_service.exe')
+        if os.path.isfile(service):
+            dest_service_dir = os.path.join(terminal['root'], 'alglib_service')
+            os.makedirs(dest_service_dir, exist_ok=True)
+            shutil.copy2(service, os.path.join(dest_service_dir, 'alglib_service.exe'))
+            print('Service copied to:', dest_service_dir)
+            if args.yes or (input('Start service now? [y/N] ').strip().lower() in ('y','yes')):
+                try:
+                    run(['powershell','-NoProfile','-Command', f'Start-Process -WindowStyle Hidden "{os.path.join(dest_service_dir, "alglib_service.exe")}"'], check=False)
+                except Exception:
+                    pass
+        else:
+            print('WARN: service not found; skip agents deploy.')
+
+        print('\nStart sequence completed for project:', project)
+        return 0
+    p.set_defaults(func=cmd_start)
 
     args = ap.parse_args()
     return args.func(args)
