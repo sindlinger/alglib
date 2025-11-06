@@ -1,2 +1,27 @@
-vendor/alglib-gpu/runtime/win64/*.dll
-vendor/alglib-gpu/runtime/win64/*.DLL
+# Ignore SOMENTE runtimes do CUDA (mantemos nossas DLLs versionadas)
+# Vendor CUDA runtime (win64)
+vendor/alglib-gpu/runtime/win64/cudart*.dll
+vendor/alglib-gpu/runtime/win64/cufft*.dll
+vendor/alglib-gpu/runtime/win64/cublas*.dll
+vendor/alglib-gpu/runtime/win64/cublasLt*.dll
+vendor/alglib-gpu/runtime/win64/cusolver*.dll
+vendor/alglib-gpu/runtime/win64/cusparse*.dll
+vendor/alglib-gpu/runtime/win64/curand*.dll
+vendor/alglib-gpu/runtime/win64/npp*.dll
+
+# Cópias dos runtimes no diretório de distribuição
+dist-wave/cudart*.dll
+dist-wave/cufft*.dll
+dist-wave/cublas*.dll
+dist-wave/cublasLt*.dll
+dist-wave/cusolver*.dll
+dist-wave/cusparse*.dll
+dist-wave/curand*.dll
+dist-wave/npp*.dll
+
+# Pastas de build e artefatos temporários
+build-win/
+*.obj
+*.tlog
+*.exp
+*.lib
