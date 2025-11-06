@@ -21,6 +21,7 @@ dist-wave/npp*.dll
 
 # Pastas de build e artefatos temporários
 build-win/
+build-win2/
 *.obj
 *.tlog
 *.exp

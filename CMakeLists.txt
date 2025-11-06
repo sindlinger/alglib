@@ -208,8 +208,11 @@ if(WIN32)
   )
 endif()
 
- # DLL ponte (somente transporte pipe): alglib_bridge.dll
-add_library(alglib_bridge SHARED src/alglib_gpu/alglib_bridge.cpp)
+ # DLL ponte (transporte + exports tipados): alglib_bridge.dll
+add_library(alglib_bridge SHARED
+  src/alglib_gpu/alglib_bridge.cpp
+  src/alglib_gpu/exports_ops_generated.cpp
+)
 target_include_directories(alglib_bridge PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/alglib_gpu ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
 set_target_properties(alglib_bridge PROPERTIES OUTPUT_NAME "alglib_bridge")
 # Garantir saída em ${_wave_out}

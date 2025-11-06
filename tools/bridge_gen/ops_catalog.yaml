@@ -53,3 +53,36 @@ functions:
     params:
       - { name: series_json, type: string }
 
+aliases:
+  - op: SPECTRAL_FILTER_GAUSSIAN
+    name: AlglibSpectralFilterGaussian
+    params:
+      - { name: sigma_low, type: double }
+      - { name: sigma_high, type: double }
+      - { name: gain, type: double }
+      - { name: mode, type: int }
+  - op: SPECTRAL_DENOISE
+    name: AlglibSpectralDenoise
+    params:
+      - { name: method, type: int }
+      - { name: threshold, type: double }
+      - { name: beta, type: double }
+      - { name: iterations, type: int }
+  - op: SPECTRAL_UPSCALE
+    name: AlglibSpectralUpscale
+    params:
+      - { name: factor, type: double }
+      - { name: mode, type: int }
+      - { name: normalize, type: int }
+  - op: SPECTRAL_ANALYZE
+    name: AlglibAnalyzeSpectrum
+    params:
+      - { name: top_k, type: int }
+      - { name: min_period, type: double }
+      - { name: max_period, type: double }
+      - { name: energy_threshold, type: double }
+      - { name: upscale_factor, type: double }
+  - op: SPECTRAL_PHASE_UNWRAP
+    name: AlglibPhaseUnwrap
+    params:
+      - { name: method, type: int }
