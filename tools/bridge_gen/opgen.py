@@ -329,6 +329,7 @@ def main():
     ap.add_argument('--mqh-name', help='Nome do arquivo .mqh de saída (ex.: AlglibOps_MeuIndi.mqh)')
     ap.add_argument('--include-dir', help='Diretório de saída do .mqh (default: MQL5/Include/pipe)')
     ap.add_argument('--no-union-presets', action='store_true', help='Não unir presets para exports; usar apenas a seleção atual')
+    ap.add_argument('--use-preset-selection', action='store_true', help='Usar exatamente as operações do preset para o .mqh (sem prompt)')
     args = ap.parse_args()
 
     header = os.path.join(args.root, 'src', 'alglib_gpu', 'alglib_pipe_messages.h')
@@ -336,7 +337,23 @@ def main():
         print('Não encontrei', header)
         sys.exit(1)
     ops_all = parse_operations(header)
-    chosen = ops_all if args.all else prompt_select(ops_all)
+    # seleção principal
+    if args.use_preset_selection and args.preset:
+        names = []
+        pr = os.path.join(args.root, 'tools', 'bridge_gen', 'presets', args.preset + '.yaml')
+        if os.path.exists(pr):
+            try:
+                import yaml as _yaml
+                data = _yaml.safe_load(open(pr, 'r', encoding='utf-8')) or {}
+                names = list(data.get('ops', []))
+            except Exception:
+                pass
+        code_map = {n:c for n,c in ops_all}
+        chosen = [(n, code_map[n]) for n in names if n in code_map]
+        if not chosen:
+            chosen = ops_all if args.all else prompt_select(ops_all)
+    else:
+        chosen = ops_all if args.all else prompt_select(ops_all)
 
     # Salvar preset (por nome do indicador)
     preset_path = None
