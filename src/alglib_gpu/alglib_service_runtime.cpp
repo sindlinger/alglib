@@ -875,9 +875,8 @@ void ServiceRuntime::process_signal(const std::shared_ptr<ProcessJob>& job)
              {
               result.primary = std::move(gpu_output);
               normalize_time_series(result.primary);
-        }
-       }
-    }
+             }
+          }
           break;
 
         case wave_pipe::Operation::SPECTRAL_ZERO_PAD:
@@ -1334,8 +1333,10 @@ void ServiceRuntime::process_signal(const std::shared_ptr<ProcessJob>& job)
          default:
            result.status = wave_pipe::Status::INVALID;
            break;
-        }
+       }
      }
+
+   }
 
    {
     std::lock_guard<std::mutex> lock(state_mutex_);

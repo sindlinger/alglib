@@ -2,6 +2,13 @@
 
 #ifdef ALGLIB_GPU_ENABLE_OPENCL
 
+// Normalizar alvo e suprimir APIs 1.2 como deprecadas para build limpo com /WX
+#ifndef CL_TARGET_OPENCL_VERSION
+#define CL_TARGET_OPENCL_VERSION 120
+#endif
+#ifndef CL_USE_DEPRECATED_OPENCL_1_2_APIS
+#define CL_USE_DEPRECATED_OPENCL_1_2_APIS
+#endif
 #include <CL/cl.h>
 
 #include <algorithm>

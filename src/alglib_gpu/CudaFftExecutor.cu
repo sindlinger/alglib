@@ -11,6 +11,12 @@
 #include <unordered_map>
 #include <vector>
 
+inline alglib_gpu::JobStatus translate_cufft(cufftResult res)
+  {
+   using alglib_gpu::JobStatus;
+   return (res == CUFFT_SUCCESS) ? JobStatus::Ok : JobStatus::ErrorBackendFailure;
+  }
+
 namespace alglib_gpu
 {
 namespace
@@ -22,12 +28,6 @@ inline JobStatus translate_cuda(cudaError_t err)
    return JobStatus::ErrorBackendFailure;
   }
 
-inline JobStatus translate_cufft(cufftResult res)
-  {
-   if(res == CUFFT_SUCCESS)
-      return JobStatus::Ok;
-   return JobStatus::ErrorBackendFailure;
-  }
 
 struct PlanKey
   {
@@ -109,10 +109,11 @@ public:
 
       const int direction = inverse ? CUFFT_INVERSE : CUFFT_FORWARD;
       auto      cufft_err = cufftExecZ2Z(plan, d_data, d_data, direction);
-      if(cufft_err != CUFFT_SUCCESS)
+      auto      cufft_st  = translate_cufft(cufft_err);
+      if(cufft_st != JobStatus::Ok)
         {
          cudaFree(d_data);
-         return JobStatus::ErrorBackendFailure;
+         return cufft_st;
         }
 
       status = translate_cuda(cudaMemcpy(inout.data(), d_data, bytes, cudaMemcpyDeviceToHost));

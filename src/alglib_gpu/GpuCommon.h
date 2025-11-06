@@ -40,7 +40,7 @@ enum class JobStatus : int
    ErrorTimeout = -5
   };
 
-struct alignas(8) GpuConfig
+struct /* alignas(8) removed to avoid MSVC C4324 */ GpuConfig
   {
    BackendType backend;
    int         device_index;
