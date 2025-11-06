@@ -20,7 +20,7 @@ Notes:
   - On Windows, deploy requires admin. Use an elevated shell.
   - Default root is the repository directory that contains this script (.. up to alglib).
 """
-import argparse, os, sys, subprocess, hashlib, shutil, datetime, platform
+import argparse, os, sys, subprocess, hashlib, shutil, datetime, platform, time
 import json
 
 
@@ -80,6 +80,36 @@ def terminal_dirs():
     return dirs
 
 
+def find_agent_libs():
+    libs = []
+    candidates = []
+    if is_windows():
+        candidates.append(os.path.join('C:\\mql5', 'Tester'))
+    if is_wsl():
+        candidates.append('/mnt/c/mql5/Tester')
+    for root in candidates:
+        if not os.path.isdir(root):
+            continue
+        try:
+            for name in os.listdir(root):
+                if not name.lower().startswith('agent-'):
+                    continue
+                p = os.path.join(root, name, 'MQL5', 'Libraries')
+                if os.path.isdir(p):
+                    libs.append(p)
+        except Exception:
+            pass
+    # de-dup normalized
+    out = []
+    seen = set()
+    for p in libs:
+        np = os.path.normpath(p)
+        if np not in seen:
+            seen.add(np)
+            out.append(np)
+    return out
+
+
 def sha256_of(path):
     h = hashlib.sha256()
     with open(path, 'rb') as f:
@@ -104,6 +134,7 @@ def check_admin_windows():
 
 def run(cmd, cwd=None, check=True):
     print('> ' + ' '.join(cmd))
+    # Do NOT capture output: we want all system returns printed to the console
     return subprocess.run(cmd, cwd=cwd, check=check)
 
 
@@ -245,6 +276,14 @@ def print_table(rows, headers):
 
 
 def cmd_deploy(args):
+    # Header and admin requirement
+    print('\n=== DEPLOY — ADMINISTRATOR REQUIRED ON WINDOWS ===')
+    print('Etapas:')
+    print('  1) Resolver artefatos de origem (dist-wave / absoluto)')
+    print('  2) Confirmar (ou --yes) e encerrar Terminal/MetaEditor/Service')
+    print('  3) Backup do arquivo de destino (por Terminal)')
+    print('  4) Copiar arquivo(s) e verificar hash (com tentativas)')
+    print('  5) Relatório consolidado (falhas, se houver)')
     # On Windows we check admin; on WSL we proceed with best-effort
     if is_windows() and not check_admin_windows():
         print('ERROR: deploy requires Administrator (elevated) shell.')
@@ -254,10 +293,27 @@ def cmd_deploy(args):
     dw = dist_wave_dir(root)
     files = args.files or ['alglib_bridge.dll']
     srcs = []
+    def resolve_src(fn: str):
+        # absolute and exists
+        if os.path.isabs(fn) and os.path.isfile(fn):
+            return fn
+        # relative to repo root
+        cand = os.path.join(root, fn)
+        if os.path.isfile(cand):
+            return cand
+        # common case: user passed 'dist-wave/NAME' → use basename in dist-wave
+        base = os.path.basename(fn)
+        cand = os.path.join(dw, base)
+        if os.path.isfile(cand):
+            return cand
+        # last resort: original join (dw + fn)
+        cand = os.path.join(dw, fn)
+        return cand if os.path.isfile(cand) else None
+
     for fn in files:
-        p = fn if os.path.isabs(fn) else os.path.join(dw, fn)
-        if not os.path.isfile(p):
-            print('ERROR: missing file', p)
+        p = resolve_src(fn)
+        if not p:
+            print('ERROR: missing file', fn)
             return 3
         srcs.append(p)
 
@@ -271,6 +327,18 @@ def cmd_deploy(args):
         src_hash_by_name[os.path.basename(s)] = h
     print('\nSource files:')
     print_table(src_meta, headers=['File','Bytes','Modified','SHA256(16)','Path'])
+    # Warn if any source is older than 30 minutes
+    now = time.time()
+    for s in srcs:
+        st = os.stat(s)
+        age_min = int((now - st.st_mtime) / 60)
+        if age_min > 30:
+            try:
+                Y = '\x1b[33m'  # yellow
+                R = '\x1b[0m'
+            except Exception:
+                Y = R = ''
+            print(f"{Y}WARNING: source '{os.path.basename(s)}' is ~{age_min} minutes old. Consider rebuilding and verify origin (dist-wave) and destination (MQL5\\Libraries).{R}")
 
     # freshness check/prompt unless forced
     if not args.yes:
@@ -292,10 +360,24 @@ def cmd_deploy(args):
                 pass
 
     # Destinations
+    # Start with explicit libs if provided, otherwise auto-detect terminals
     if getattr(args, 'libs', None):
         tdirs = [{'id': f'manual{idx+1}', 'root': os.path.dirname(os.path.dirname(p)), 'libs': p} for idx, p in enumerate(args.libs)]
     else:
         tdirs = terminal_dirs()
+
+    # Optionally include Agent libraries
+    if getattr(args, 'agents', False):
+        agent_list = find_agent_libs()
+        if agent_list:
+            print(f"Including Agent libraries ({len(agent_list)}):")
+            for p in agent_list:
+                print('  -', p)
+            # append as manual IDs
+            base = len(tdirs)
+            tdirs += [{'id': f'agent{base+i+1}', 'root': os.path.dirname(os.path.dirname(p)), 'libs': p} for i, p in enumerate(agent_list)]
+        else:
+            print('No Agent libraries found (C:/mql5/Tester/Agent-*/MQL5/Libraries).')
     if not tdirs:
         print('No Terminal dirs found.')
         return 4
@@ -328,7 +410,10 @@ def cmd_deploy(args):
 
     # Copy
     rows = []
+    failed = []  # (dest_path, dest_id, expected_sha, src_path)
+    src_by_name = {os.path.basename(s): s for s in srcs}
     for d in targets:
+        print(f"\n-- Target (MQL5\\Libraries): {d['libs']}")
         for s in srcs:
             dst = os.path.join(d['libs'], os.path.basename(s))
             os.makedirs(d['libs'], exist_ok=True)
@@ -337,27 +422,64 @@ def cmd_deploy(args):
                 bdst_dir = os.path.join(backup_root, d['id'])
                 os.makedirs(bdst_dir, exist_ok=True)
                 bdst = os.path.join(bdst_dir, os.path.basename(dst))
+                print(f"BACKUP  {dst} -> {bdst}")
                 shutil.copy2(dst, bdst)
                 if getattr(args, 'trash', False):
-                    send_to_trash(dst)
+                    ok = send_to_trash(dst)
+                    print(f"TRASH   {dst} -> recycle_bin result={'OK' if ok else 'N/A'}")
+            print(f"COPY    {s} -> {dst}")
             shutil.copy2(s, dst)
             st = os.stat(dst)
             d_hash = sha256_of(dst)
             s_hash = src_hash_by_name.get(os.path.basename(s), '')
             verified = 'OK' if d_hash == s_hash else 'FAIL'
+            if verified != 'OK':
+                failed.append((dst, d['id'], s_hash, s))
             rows.append([
                 d['id'], os.path.basename(dst), fmt_dt(st.st_ctime), fmt_dt(st.st_mtime), str(st.st_size), d_hash[:16], verified, d['libs']
             ])
 
     print('\nDeployed files (verification):')
     print_table(rows, headers=['TerminalID','File','Created','Modified','Bytes','SHA256(16)','Verified','Destination'])
-    # Summary
-    fails = sum(1 for r in rows if r[6] != 'OK')
+    # Retry loop for failures
+    if failed and getattr(args, 'retries', 1) > 0:
+        for attempt in range(1, args.retries + 1):
+            print(f"\n-- RETRY attempt {attempt}/{args.retries} for mismatched copies --")
+            new_failed = []
+            for dst, term_id, expected_sha, src_path in failed:
+                try:
+                    print(f"RETRY COPY {src_path} -> {dst}")
+                    shutil.copy2(src_path, dst)
+                    d_hash = sha256_of(dst)
+                    print(f"VERIFY  dst={dst} expected={expected_sha[:16]} actual={d_hash[:16]}")
+                    if d_hash != expected_sha:
+                        new_failed.append((dst, term_id, expected_sha, src_path))
+                except Exception as e:
+                    print(f"ERROR retrying copy to {dst}: {e}")
+                    new_failed.append((dst, term_id, expected_sha, src_path))
+            failed = new_failed
+            if not failed:
+                print("All mismatches resolved after retry.")
+                break
+
+    # Detailed report for remaining failures
+    if failed:
+        print("\nFailures (hash mismatch):")
+        for dst, term_id, expected_sha, src_path in failed:
+            actual_sha = sha256_of(dst) if os.path.isfile(dst) else 'MISSING'
+            print(f" - {dst} (terminal={term_id}) expected={expected_sha[:16]} actual={actual_sha[:16]}")
+
+    # Summary and optional hard failure
+    fails = len(failed)
     if fails == 0:
         print(f"\nSummary: {len(rows)} file copies verified OK across {len(targets)} Terminal(s).")
+        return 0
     else:
         print(f"\nSummary: {fails} verification failure(s) out of {len(rows)} copies.")
-    return 0
+        if getattr(args, 'require_match', False):
+            print("Aborting with error due to --require-match. Use 'undeploy' to restore backup if needed.")
+            return 6
+        return 0
 
 
 def latest_backup_for(root, terminal_id, filename):
@@ -380,7 +502,9 @@ def restore_from_recycle_bin(dst_path):
     folder = os.path.dirname(dst_path)
     script = f"$s=New-Object -ComObject Shell.Application; $bin=$s.NameSpace(0xA); $items=$bin.Items(); $restored=$false; foreach($i in $items){{ $on=$bin.GetDetailsOf($i,0); $ol=$bin.GetDetailsOf($i,1); if($on -eq '{name}' -and $ol -like '*MQL5\\Libraries*'){{ try{{$i.InvokeVerb('RESTORE')}}catch{{}} $restored=$true; break }} }}; if($restored){{exit 0}} else {{exit 1}}"
     try:
-        r = subprocess.run(['powershell','-NoProfile','-Command',script], capture_output=True)
+        r = subprocess.run(['powershell','-NoProfile','-Command',script], capture_output=True, text=True)
+        print('RecycleBin stdout:', (r.stdout or '').strip())
+        print('RecycleBin stderr:', (r.stderr or '').strip())
         return r.returncode == 0
     except Exception:
         return False
@@ -471,9 +595,12 @@ def main():
     p.add_argument('--terminal-id', help='Specific Terminal ID (default: all)')
     p.add_argument('--all', action='store_true', help='Deploy to all Terminals')
     p.add_argument('--libs', action='append', help='Explicit MQL5\\Libraries directory (repeatable). Overrides detection when present')
+    p.add_argument('--agents', action='store_true', help='Also deploy to all Tester Agent MQL5\\Libraries (C:/mql5/Tester/Agent-*/MQL5/Libraries)')
     p.add_argument('--yes', action='store_true', help='Do not prompt for confirmation')
     p.add_argument('--no-kill', action='store_true', help='Do not kill processes before copying')
     p.add_argument('--trash', action='store_true', help='Send replaced files to Recycle Bin (requires send2trash, optional)')
+    p.add_argument('--retries', type=int, default=1, help='Auto-retries for mismatched copies (default: 1)')
+    p.add_argument('--require-match', action='store_true', help='Fail (non-zero) if any destination hash mismatches source')
     p.set_defaults(func=cmd_deploy)
 
     p = sub.add_parser('undeploy', help='Restore previous files from backup or Recycle Bin')
