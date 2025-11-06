@@ -28,29 +28,32 @@ endif()
 file(GLOB_RECURSE ALGLIB_SOURCES "src/alglib/*.cpp")
 
 set(CORE_SOURCES
-    src/alglib_gpu/GpuBackend.cpp
-    src/alglib_gpu/GpuFftDispatcher.cpp
-    src/alglib_gpu/alglib_service_runtime.cpp
-    src/alglib_gpu/Logging.cpp
+    src/dll_core/GpuBackend.cpp
+    src/dll_core/GpuFftDispatcher.cpp
+    src/service/alglib_service_runtime.cpp
+    src/dll_core/Logging.cpp
 )
 
 if(ALGLIB_GPU_ENABLE_CUDA)
   enable_language(CUDA)
   list(APPEND CORE_SOURCES
-    src/alglib_gpu/CudaFftExecutor.cu
-    src/alglib_gpu/CudaKernels.cu)
+    src/dll_core/CudaFftExecutor.cu
+    src/dll_core/CudaKernels.cu)
 endif()
 
 if(ALGLIB_GPU_ENABLE_OPENCL)
   find_package(OpenCL REQUIRED)
   list(APPEND CORE_SOURCES
-    src/alglib_gpu/OpenClFftExecutor.cpp
-    src/alglib_gpu/OpenClKernels.cpp)
+    src/dll_core/OpenClFftExecutor.cpp
+    src/dll_core/OpenClKernels.cpp)
 endif()
 
 add_library(alglib_gpu_core STATIC ${CORE_SOURCES})
 target_include_directories(alglib_gpu_core
   PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dll_core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dll_bridge
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/service
     ${CMAKE_CURRENT_SOURCE_DIR}/src/alglib_gpu
     ${CMAKE_CURRENT_SOURCE_DIR}/src/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/alglib
@@ -100,20 +103,24 @@ if(ALGLIB_GPU_ENABLE_OPENCL)
 endif()
 
 add_library(alglib_gpu SHARED
-    src/alglib_gpu/dll_exports.cpp
+    src/dll_bridge/dll_exports.cpp
+    src/dll_bridge/exports_ops_generated.cpp
     ${ALGLIB_SOURCES}
 )
 
 if(ALGLIB_GPU_ENABLE_CUDA)
   target_sources(alglib_gpu PRIVATE
-    src/alglib_gpu/CudaFftExecutor.cu
-    src/alglib_gpu/CudaKernels.cu)
+    src/dll_core/CudaFftExecutor.cu
+    src/dll_core/CudaKernels.cu)
 endif()
 
 set_target_properties(alglib_gpu PROPERTIES OUTPUT_NAME "alglib")
 
 target_include_directories(alglib_gpu
   PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dll_core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dll_bridge
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/service
     ${CMAKE_CURRENT_SOURCE_DIR}/src/alglib_gpu
     ${CMAKE_CURRENT_SOURCE_DIR}/src/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/alglib
@@ -127,7 +134,7 @@ if(ALGLIB_GPU_ENABLE_CUDA)
   set_target_properties(alglib_gpu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
     CUDA_RESOLVE_DEVICE_SYMBOLS OFF)
-  target_sources(alglib_gpu PRIVATE src/alglib_gpu/CudaFftExecutor.cu)
+  target_sources(alglib_gpu PRIVATE src/dll_core/CudaFftExecutor.cu)
   target_link_libraries(alglib_gpu PRIVATE ${_cuda_runtime_targets})
 endif()
 
@@ -145,7 +152,7 @@ if(WIN32)
       "$<TARGET_FILE_DIR:alglib_gpu>")
 endif()
 
-add_executable(ALGLIB_Service_app src/alglib_gpu/ALGLIB_Service.cpp)
+add_executable(ALGLIB_Service_app src/service/ALGLIB_Service.cpp)
 target_sources(ALGLIB_Service_app PRIVATE ${ALGLIB_SOURCES})
 set_target_properties(ALGLIB_Service_app PROPERTIES OUTPUT_NAME "alglib_service")
 
@@ -155,6 +162,9 @@ endif()
 
 target_include_directories(ALGLIB_Service_app
   PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dll_core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dll_bridge
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/service
     ${CMAKE_CURRENT_SOURCE_DIR}/src/alglib_gpu
     ${CMAKE_CURRENT_SOURCE_DIR}/src/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/alglib
@@ -183,7 +193,7 @@ endif()
 install(TARGETS alglib_gpu DESTINATION bin)
 install(TARGETS ALGLIB_Service_app DESTINATION bin)
 
-add_executable(ALGLIB_DiagService src/alglib_gpu/ALGLIB_DiagService.cpp)
+add_executable(ALGLIB_DiagService src/service/ALGLIB_DiagService.cpp)
 target_link_libraries(ALGLIB_DiagService PRIVATE ws2_32)
 set_target_properties(ALGLIB_DiagService PROPERTIES OUTPUT_NAME "alglib_diag_service")
 install(TARGETS ALGLIB_DiagService DESTINATION bin)
