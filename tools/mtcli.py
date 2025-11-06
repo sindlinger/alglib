@@ -6,7 +6,8 @@ Commands:
   detect                 Detect Terminal folders (MQL5\Libraries) for current user
   list                   List dist-wave artifacts with times and hashes
   build                  Configure+build via CMake; optional preset regen
-  deploy                 Kill MT/Editor/Service, confirm freshness, copy DLLs to Terminals, print table
+  deploy                 Kill MT/Editor/Service, confirm freshness, copy DLLs to Terminals, backup old files (and optional Recycle Bin), print table
+  undeploy               Restore previous version from backup (default) or attempt Recycle Bin restore
   kill                   Kill running processes (terminal/metaeditor/alglib_service)
 
 Examples (PowerShell, one per line):
@@ -241,12 +242,33 @@ def cmd_deploy(args):
         # default: all
         targets = tdirs
 
+    # Prepare backup folder
+    stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup_root = os.path.join(root, 'tools', 'mtcli_backups', stamp)
+
+    # Optional trash support
+    def send_to_trash(path):
+        try:
+            import send2trash  # optional dependency
+            send2trash.send2trash(path)
+            return True
+        except Exception:
+            return False
+
     # Copy
     rows = []
     for d in targets:
         for s in srcs:
             dst = os.path.join(d['libs'], os.path.basename(s))
             os.makedirs(d['libs'], exist_ok=True)
+            # backup existing
+            if os.path.isfile(dst):
+                bdst_dir = os.path.join(backup_root, d['id'])
+                os.makedirs(bdst_dir, exist_ok=True)
+                bdst = os.path.join(bdst_dir, os.path.basename(dst))
+                shutil.copy2(dst, bdst)
+                if getattr(args, 'trash', False):
+                    send_to_trash(dst)
             shutil.copy2(s, dst)
             st = os.stat(dst)
             rows.append([
@@ -255,6 +277,86 @@ def cmd_deploy(args):
 
     print('\nDeployed files:')
     print_table(rows, headers=['TerminalID','File','Created','Modified','Bytes','SHA256(16)','Destination'])
+    return 0
+
+
+def latest_backup_for(root, terminal_id, filename):
+    base = os.path.join(root, 'tools', 'mtcli_backups')
+    if not os.path.isdir(base):
+        return None
+    stamps = sorted([n for n in os.listdir(base) if os.path.isdir(os.path.join(base, n))], reverse=True)
+    for st in stamps:
+        p = os.path.join(base, st, terminal_id, filename)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def restore_from_recycle_bin(dst_path):
+    # Best effort: use PowerShell COM to find and restore a recycled item matching original name and destination folder
+    if not is_windows():
+        return False
+    name = os.path.basename(dst_path)
+    folder = os.path.dirname(dst_path)
+    script = f"$s=New-Object -ComObject Shell.Application; $bin=$s.NameSpace(0xA); $items=$bin.Items(); $restored=$false; foreach($i in $items){{ $on=$bin.GetDetailsOf($i,0); $ol=$bin.GetDetailsOf($i,1); if($on -eq '{name}' -and $ol -like '*MQL5\\Libraries*'){{ try{{$i.InvokeVerb('RESTORE')}}catch{{}} $restored=$true; break }} }}; if($restored){{exit 0}} else {{exit 1}}"
+    try:
+        r = subprocess.run(['powershell','-NoProfile','-Command',script], capture_output=True)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def cmd_undeploy(args):
+    if not is_windows():
+        print('undeploy only implemented for Windows.')
+        return 1
+    if not check_admin_windows():
+        print('ERROR: undeploy may require Administrator (elevated) shell for process kill/copy.')
+    root = args.root or repo_root_from_here()
+    files = args.files or ['alglib_bridge.dll']
+    # Kill processes if requested
+    if not args.no_kill:
+        kill_processes(['terminal64.exe', 'terminal.exe', 'metaeditor64.exe', 'metaeditor.exe', 'alglib_service.exe'])
+
+    tdirs = terminal_dirs()
+    if not tdirs:
+        print('No Terminal dirs found.')
+        return 2
+    targets = []
+    if args.all:
+        targets = tdirs
+    elif args.terminal_id:
+        for d in tdirs:
+            if d['id'] == args.terminal_id:
+                targets = [d]; break
+        if not targets:
+            print('Terminal id not found:', args.terminal_id)
+            return 3
+    else:
+        targets = tdirs
+
+    rows = []
+    for d in targets:
+        for fn in files:
+            dst = os.path.join(d['libs'], fn)
+            restored = False
+            reason = ''
+            if args.from_recycle:
+                restored = restore_from_recycle_bin(dst)
+                reason = 'recycle'
+            if not restored:
+                # try backup
+                bk = latest_backup_for(root, d['id'], fn)
+                if bk:
+                    os.makedirs(d['libs'], exist_ok=True)
+                    shutil.copy2(bk, dst)
+                    restored = True
+                    reason = 'backup'
+            st = os.stat(dst) if os.path.isfile(dst) else None
+            rows.append([d['id'], fn, 'OK' if restored else 'MISS', reason, fmt_dt(st.st_mtime) if st else '-', str(st.st_size) if st else '-', sha256_of(dst)[:16] if st else '-', d['libs']])
+
+    print('\nUndeploy result:')
+    print_table(rows, headers=['TerminalID','File','Restored','Source','Modified','Bytes','SHA256(16)','Destination'])
     return 0
 
 
@@ -292,7 +394,17 @@ def main():
     p.add_argument('--all', action='store_true', help='Deploy to all Terminals')
     p.add_argument('--yes', action='store_true', help='Do not prompt for confirmation')
     p.add_argument('--no-kill', action='store_true', help='Do not kill processes before copying')
+    p.add_argument('--trash', action='store_true', help='Send replaced files to Recycle Bin (requires send2trash, optional)')
     p.set_defaults(func=cmd_deploy)
+
+    p = sub.add_parser('undeploy', help='Restore previous files from backup or Recycle Bin')
+    p.add_argument('--root', help='Repo root (default: auto)')
+    p.add_argument('--files', nargs='+', help='Files to restore (default: alglib_bridge.dll)')
+    p.add_argument('--terminal-id', help='Specific Terminal ID (default: all)')
+    p.add_argument('--all', action='store_true', help='Apply to all Terminals')
+    p.add_argument('--from-recycle', action='store_true', help='Attempt restore from Recycle Bin (best effort)')
+    p.add_argument('--no-kill', action='store_true', help='Do not kill processes before restore')
+    p.set_defaults(func=cmd_undeploy)
 
     args = ap.parse_args()
     return args.func(args)
@@ -300,4 +412,3 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
-
