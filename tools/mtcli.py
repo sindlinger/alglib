@@ -21,6 +21,7 @@ Notes:
   - Default root is the repository directory that contains this script (.. up to alglib).
 """
 import argparse, os, sys, subprocess, hashlib, shutil, datetime, platform
+import json
 
 
 def is_windows():
@@ -104,6 +105,40 @@ def check_admin_windows():
 def run(cmd, cwd=None, check=True):
     print('> ' + ' '.join(cmd))
     return subprocess.run(cmd, cwd=cwd, check=check)
+
+
+def to_winpath(p: str) -> str:
+    """Convert /mnt/c/... to C:\... when running under WSL for PowerShell tools."""
+    if not is_wsl() or not isinstance(p, str):
+        return p
+    if p.startswith('/mnt/') and len(p) > 6 and p[6] == '/':
+        drive = p[5].upper()
+        rest = p[7:].replace('/', '\\')
+        return f"{drive}:\\{rest}"
+    return p
+
+
+# ---------------- Project persistence -----------------
+def _projects_path(root: str) -> str:
+    return os.path.join(root, 'tools', 'mtcli_projects.json')
+
+def load_projects(root: str):
+    path = _projects_path(root)
+    if not os.path.isfile(path):
+        return {"last_project": None, "projects": {}}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {"last_project": None, "projects": {}}
+
+def save_projects(root: str, data):
+    path = _projects_path(root)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
 
 
 def cmd_detect(_args):
@@ -450,36 +485,139 @@ def main():
     p.add_argument('--no-kill', action='store_true', help='Do not kill processes before restore')
     p.set_defaults(func=cmd_undeploy)
 
+    # ---- project (save/list/use/show) ----
+    proj = sub.add_parser('project', help='Manage saved projects (paths, presets, defaults)')
+    proj_sub = proj.add_subparsers(dest='pcmd', required=True)
+    def _cmd_proj_save(args):
+        root = args.root or repo_root_from_here()
+        data = load_projects(root)
+        pid = args.id
+        if not pid:
+            print('ERROR: --id is required'); return 2
+        now = datetime.datetime.now().isoformat(timespec='seconds')
+        proj = data.get('projects', {}).get(pid, {})
+        proj.update({
+            'project': args.name or proj.get('project') or pid,
+            'libs': args.libs or proj.get('libs',''),
+            'metaeditor': args.metaeditor or proj.get('metaeditor',''),
+            'updated_at': now,
+        })
+        if 'created_at' not in proj:
+            proj['created_at'] = now
+        data.setdefault('projects', {})[pid] = proj
+        if args.set_default:
+            data['last_project'] = pid
+        save_projects(root, data)
+        print('Saved project:', pid)
+        return 0
+    ps = proj_sub.add_parser('save', help='Save or update a project')
+    ps.add_argument('--root', help='Repo root (default: auto)')
+    ps.add_argument('--id', required=True, help='Project id (e.g., legacy-wave)')
+    ps.add_argument('--name', help='Preset/name for generator (e.g., GPU_LegacyWave1.0.4)')
+    ps.add_argument('--libs', help='Path to MQL5\\Libraries for this project')
+    ps.add_argument('--metaeditor', help='Path to metaeditor64.exe for this project')
+    ps.add_argument('--set-default', action='store_true', help='Set as last_project')
+    ps.set_defaults(func=_cmd_proj_save)
+
+    def _cmd_proj_list(args):
+        root = args.root or repo_root_from_here()
+        data = load_projects(root)
+        rows = []
+        last = data.get('last_project')
+        for pid, proj in data.get('projects', {}).items():
+            mark = '*' if pid == last else ' '
+            rows.append([mark+pid, proj.get('project',''), proj.get('libs',''), proj.get('metaeditor',''), proj.get('updated_at','')])
+        if rows:
+            print_table(rows, headers=['ProjectID','Name','Libraries','MetaEditor','Updated'])
+        else:
+            print('No saved projects.')
+        return 0
+    pl = proj_sub.add_parser('list', help='List projects')
+    pl.add_argument('--root', help='Repo root (default: auto)')
+    pl.set_defaults(func=_cmd_proj_list)
+
+    def _cmd_proj_use(args):
+        root = args.root or repo_root_from_here()
+        data = load_projects(root)
+        if args.id not in data.get('projects', {}):
+            print('ERROR: unknown project id:', args.id); return 2
+        data['last_project'] = args.id
+        save_projects(root, data)
+        print('Now using project:', args.id)
+        return 0
+    pu = proj_sub.add_parser('use', help='Set default (last) project')
+    pu.add_argument('--root', help='Repo root (default: auto)')
+    pu.add_argument('--id', required=True)
+    pu.set_defaults(func=_cmd_proj_use)
+
+    def _cmd_proj_show(args):
+        root = args.root or repo_root_from_here()
+        data = load_projects(root)
+        pid = args.id or data.get('last_project')
+        proj = data.get('projects', {}).get(pid)
+        if not proj:
+            print('No project selected or not found.'); return 1
+        rows = [[pid, proj.get('project',''), proj.get('libs',''), proj.get('metaeditor',''), proj.get('updated_at','')]]
+        print_table(rows, headers=['ProjectID','Name','Libraries','MetaEditor','Updated'])
+        return 0
+    psh = proj_sub.add_parser('show', help='Show current or specific project')
+    psh.add_argument('--root', help='Repo root (default: auto)')
+    psh.add_argument('--id', help='Project id (default: last)')
+    psh.set_defaults(func=_cmd_proj_show)
+
     # ---- start (interactive wizard) ----
     p = sub.add_parser('start', help='Interactive setup: pick Terminal, prepare EA, generate preset, build, deploy, deploy agents')
-    p.add_argument('--project', help='Project name (default: GPU_LegacyWave1.0.4)')
+    p.add_argument('--project-id', help='Saved project id to use (default: last saved)')
+    p.add_argument('--project', help='Project/preset name (default: GPU_LegacyWave1.0.4)')
     p.add_argument('--ea-name', default='CommandListener', help='EA name without extension (default: CommandListener)')
+    p.add_argument('--libs', help='Target MQL5\\Libraries path (skips selection if provided)')
+    p.add_argument('--metaeditor', help='Full path to metaeditor64.exe (skips auto-detect/prompt)')
     p.add_argument('--yes', action='store_true', help='Assume yes to prompts when safe')
     def cmd_start(args):
         # 1) Project name
-        project = args.project or (input('Project name [GPU_LegacyWave1.0.4]: ').strip() or 'GPU_LegacyWave1.0.4')
+        root_cfg = repo_root_from_here()
+        pdata = load_projects(root_cfg)
+        chosen_id = args.project_id or pdata.get('last_project')
+        project = None
+        default_name = 'GPU_LegacyWave1.0.4'
+        if chosen_id and chosen_id in pdata.get('projects', {}):
+            projinfo = pdata['projects'][chosen_id]
+            project = projinfo.get('project') or default_name
+            args.libs = args.libs or projinfo.get('libs')
+            args.metaeditor = args.metaeditor or projinfo.get('metaeditor')
+            print(f"Using saved project '{chosen_id}': name={project}")
+        project = project or args.project or (input(f'Project name [{default_name}]: ').strip() or default_name)
 
         # 2) Pick Terminal (MQL5\Libraries)
-        detected = terminal_dirs()
-        print('\nTerminals detected:')
-        for i, d in enumerate(detected, 1):
-            print(f" {i}. id={d['id']} libs={d['libs']}")
-        print(f" {len(detected)+1}. Other... (enter a custom MQL5\\Libraries path)")
-        choice = input(f'Select [1-{len(detected)+1}]: ').strip()
-        try:
-            idx = int(choice)
-        except Exception:
-            idx = len(detected)+1
-        if idx==len(detected)+1:
-            libs = input('Enter full path to MQL5\\Libraries: ').strip()
+        if args.libs:
+            libs = args.libs
             if libs.startswith('~'):
                 libs = os.path.expanduser(libs)
             if not os.path.isdir(libs):
-                print('ERROR: invalid Libraries path. Aborting.')
+                print('ERROR: invalid Libraries path:', libs)
                 return 2
             terminal = {'id':'manual','root': os.path.dirname(os.path.dirname(libs)), 'libs': libs}
         else:
-            terminal = detected[idx-1]
+            detected = terminal_dirs()
+            print('\nTerminals detected:')
+            for i, d in enumerate(detected, 1):
+                print(f" {i}. id={d['id']} libs={d['libs']}")
+            print(f" {len(detected)+1}. Other... (enter a custom MQL5\\Libraries path)")
+            choice = input(f'Select [1-{len(detected)+1}]: ').strip()
+            try:
+                idx = int(choice)
+            except Exception:
+                idx = len(detected)+1
+            if idx==len(detected)+1:
+                libs = input('Enter full path to MQL5\\Libraries: ').strip()
+                if libs.startswith('~'):
+                    libs = os.path.expanduser(libs)
+                if not os.path.isdir(libs):
+                    print('ERROR: invalid Libraries path. Aborting.')
+                    return 2
+                terminal = {'id':'manual','root': os.path.dirname(os.path.dirname(libs)), 'libs': libs}
+            else:
+                terminal = detected[idx-1]
         mql5_root = os.path.dirname(terminal['libs'])
         experts_dir = os.path.join(mql5_root, 'Experts', project)
         os.makedirs(experts_dir, exist_ok=True)
@@ -492,7 +630,6 @@ def main():
             tpl = (
                 '#property strict\n'
                 f'// Auto-generated by mtcli start for project {project}\n'
-                '#include <WinUser32.mqh>\n'
                 'int OnInit(){ Print("CommandListener init"); return(INIT_SUCCEEDED);}\n'
                 'void OnTick(){}\n'
                 'void OnChartEvent(const int id,const long &l,const double &d,const string &s){ PrintFormat("EVT %d %s", id, s); }\n'
@@ -502,7 +639,7 @@ def main():
             print('Created EA:', ea_mq5)
 
         # locate MetaEditor
-        meta = os.environ.get('METAEDITOR','')
+        meta = args.metaeditor or os.environ.get('METAEDITOR','')
         if not meta:
             # try powershell
             try:
@@ -514,10 +651,24 @@ def main():
                 meta = cand
             except Exception:
                 meta = ''
-        if not meta or not os.path.isfile(meta):
+        def _meta_exists(p):
+            if not p:
+                return False
+            if os.path.isfile(p):
+                return True
+            if is_wsl():
+                try:
+                    r = subprocess.run(['powershell','-NoProfile','-Command', f"if(Test-Path '{p}'){ 'OK' }"], capture_output=True, text=True)
+                    return 'OK' in (r.stdout or '')
+                except Exception:
+                    return False
+            return False
+        if args.metaeditor:
+            pass
+        elif not _meta_exists(meta):
             print('WARN: MetaEditor not found automatically. Provide full path (ex.: C:\\Program Files\\MetaTrader 5\\metaeditor64.exe)')
             meta = input('MetaEditor path: ').strip()
-        if not os.path.isfile(meta):
+        if not (args.metaeditor or _meta_exists(meta)):
             print('ERROR: MetaEditor path invalid. Aborting.')
             return 3
 
@@ -526,7 +677,11 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
         log_path = os.path.join(log_dir, f'compile_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
         # Use powershell for consistency
-        cmd = ['powershell','-NoProfile','-Command', f'& "{meta}" /log:"{log_path}" /compile:"{ea_mq5}"']
+        ps = 'powershell.exe' if is_wsl() else 'powershell'
+        meta_p = to_winpath(meta)
+        log_p = to_winpath(log_path)
+        ea_p = to_winpath(ea_mq5)
+        cmd = [ps,'-NoProfile','-Command', f'& "{meta_p}" /log:"{log_p}" /compile:"{ea_p}"']
         run(cmd, check=False)
         ea_ex5 = os.path.join(experts_dir, ea_base + '.ex5')
         if not os.path.isfile(ea_ex5):
@@ -557,9 +712,12 @@ def main():
         else:
             print('WARN: opgen.py not found; skipping preset regeneration.')
 
-        # 5) Build
-        bargs = argparse.Namespace(root=root, build_dir=None, arch='x64', config='Release', targets=['alglib_bridge'], parallel=os.cpu_count() or 8, preset=project, use_preset_selection=True, no_union_presets=False, extra=[])
-        cmd_build(bargs)
+        # 5) Build (skip in WSL; use existing DLL)
+        if is_wsl():
+            print('WSL environment: skipping CMake build (use existing dist-wave/alglib_bridge.dll).')
+        else:
+            bargs = argparse.Namespace(root=root, build_dir=None, arch='x64', config='Release', targets=['alglib_bridge'], parallel=os.cpu_count() or 8, preset=project, use_preset_selection=True, no_union_presets=False, extra=[])
+            cmd_build(bargs)
 
         # 6) Deploy bridge to selected Terminal only
         dw = dist_wave_dir(root)
@@ -582,7 +740,15 @@ def main():
         else:
             print('WARN: service not found; skip agents deploy.')
 
-        print('\nStart sequence completed for project:', project)
+        # persist as last_project
+        pdata = load_projects(root_cfg)
+        # if we used a saved id, update it, else save under derived id
+        pid = chosen_id or (project.lower().replace(' ', '-'))
+        pdata.setdefault('projects', {}).setdefault(pid, {})
+        pdata['projects'][pid].update({'project': project, 'libs': terminal['libs'], 'metaeditor': meta, 'updated_at': datetime.datetime.now().isoformat(timespec='seconds')})
+        pdata['last_project'] = pid
+        save_projects(root_cfg, pdata)
+        print('\nStart sequence completed for project:', project, 'as id:', pid)
         return 0
     p.set_defaults(func=cmd_start)
 

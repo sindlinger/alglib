@@ -1,0 +1,12 @@
+{
+  "last_project": "legacy-wave",
+  "projects": {
+    "legacy-wave": {
+      "project": "GPU_LegacyWave1.0.4",
+      "libs": "/mnt/c/mql5/MQL5/Libraries",
+      "metaeditor": "C:\\mql5\\MetaEditor64.exe",
+      "updated_at": "2025-11-06T12:19:21",
+      "created_at": "2025-11-06T12:19:17"
+    }
+  }
+}
