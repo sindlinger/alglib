@@ -278,30 +278,103 @@ def gen_mqh(ops, root_dir):
                    .replace('{WRAPPERS_GENERIC}', '\n'.join(wrappers_generic)) \
                    .replace('{WRAPPERS_ALIAS}', '\n'.join(alias_wrappers))
 
+def read_presets(root: str):
+    preset_dir = os.path.join(root, 'tools', 'bridge_gen', 'presets')
+    items = []
+    if os.path.isdir(preset_dir):
+        for fn in os.listdir(preset_dir):
+            if not fn.lower().endswith('.yaml'):
+                continue
+            try:
+                import yaml as _yaml
+                data = _yaml.safe_load(open(os.path.join(preset_dir, fn), 'r', encoding='utf-8'))
+                if data and data.get('ops'):
+                    items.append({'name': os.path.splitext(fn)[0], 'ops': list(data['ops'])})
+            except Exception:
+                continue
+    return items
+
+def save_preset(root: str, preset: str, op_names):
+    os.makedirs(os.path.join(root, 'tools', 'bridge_gen', 'presets'), exist_ok=True)
+    path = os.path.join(root, 'tools', 'bridge_gen', 'presets', preset + '.yaml')
+    try:
+        import yaml as _yaml
+        _yaml.safe_dump({'ops': list(sorted(set(op_names)))}, open(path, 'w', encoding='utf-8'), sort_keys=False, allow_unicode=True)
+    except Exception:
+        open(path, 'w', encoding='utf-8').write('\n'.join(sorted(set(op_names))))
+    return path
+
+def union_ops_from_presets(all_ops, presets):
+    # all_ops: list[(name, code)] — authoritative mapping for codes
+    code_map = {name: code for name, code in all_ops}
+    selected_names = set()
+    for p in presets:
+        for n in p.get('ops', []):
+            if n in code_map:
+                selected_names.add(n)
+    out = [(n, code_map[n]) for n in all_ops_names(all_ops) if n in selected_names]
+    return out
+
+def all_ops_names(ops):
+    return [n for n, _ in ops]
+
+def sanitize_filename(name: str):
+    return re.sub(r'[^A-Za-z0-9._-]+', '_', name).strip('_')
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--root', required=True, help='Raiz do projeto alglib (contém src/alglib_gpu)')
     ap.add_argument('--all', action='store_true', help='Selecionar todas as operações')
+    ap.add_argument('--preset', help='Nome do preset (gerará .mqh específico e salvará seleção)')
+    ap.add_argument('--mqh-name', help='Nome do arquivo .mqh de saída (ex.: AlglibOps_MeuIndi.mqh)')
+    ap.add_argument('--include-dir', help='Diretório de saída do .mqh (default: MQL5/Include/pipe)')
+    ap.add_argument('--no-union-presets', action='store_true', help='Não unir presets para exports; usar apenas a seleção atual')
     args = ap.parse_args()
 
     header = os.path.join(args.root, 'src', 'alglib_gpu', 'alglib_pipe_messages.h')
     if not os.path.exists(header):
         print('Não encontrei', header)
         sys.exit(1)
-    ops = parse_operations(header)
-    chosen = ops if args.all else prompt_select(ops)
+    ops_all = parse_operations(header)
+    chosen = ops_all if args.all else prompt_select(ops_all)
+
+    # Salvar preset (por nome do indicador)
+    preset_path = None
+    if args.preset:
+        preset_names = [n for n, _ in chosen]
+        preset_path = save_preset(args.root, args.preset, preset_names)
+
+    # Exports da DLL: por padrão, união de todos os presets existentes + seleção atual
+    exports_ops = chosen
+    if not args.no_union_presets:
+        presets = read_presets(args.root)
+        # inclui seleção atual no conjunto via preset efêmero
+        if args.preset:
+            presets.append({'name': args.preset, 'ops': [n for n, _ in chosen]})
+        union = union_ops_from_presets(ops_all, presets)
+        exports_ops = union if union else chosen
+
     # gerar C++ exports
-    out_cpp = gen_exports(chosen)
+    out_cpp = gen_exports(exports_ops)
     cpp_path = os.path.join(args.root, 'src', 'alglib_gpu', 'exports_ops_generated.cpp')
     open(cpp_path, 'w', encoding='utf-8').write(out_cpp)
-    # gerar .mqh (com wrappers genéricos + aliases compatíveis)
-    mqh_path = os.path.join(args.root, '..', 'Include', 'pipe', 'AlglibOps.mqh')
-    os.makedirs(os.path.dirname(mqh_path), exist_ok=True)
+
+    # gerar .mqh para o preset ou genérico
+    include_dir = args.include_dir or os.path.join(args.root, '..', 'Include', 'pipe')
+    os.makedirs(include_dir, exist_ok=True)
+    if args.preset:
+        base = args.mqh_name or f"AlglibOps_{sanitize_filename(args.preset)}.mqh"
+    else:
+        base = args.mqh_name or 'AlglibOps.mqh'
+    mqh_path = os.path.join(include_dir, base)
     open(mqh_path, 'w', encoding='utf-8').write(gen_mqh(chosen, args.root))
+
     print('Gerado:')
     print(' -', cpp_path)
     print(' -', mqh_path)
-    print('\nAgora recompile alglib_bridge.dll via CMake e importe <pipe/AlglibOps.mqh> no indicador.')
+    if preset_path:
+        print(' - preset salvo em', preset_path)
+    print('\nAgora recompile alglib_bridge.dll via CMake. O .mqh acima deve ser importado pelo indicador correspondente.')
 
 if __name__ == '__main__':
     main()

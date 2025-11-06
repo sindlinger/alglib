@@ -170,30 +170,32 @@ def main():
     selected = choose_operations(spec)
     spec['functions'] = selected
 
-    # escreve spec temporário JSON para o gerador
-    temp_spec = os.path.join(root, 'api_spec.json')
-    with open(temp_spec, 'w', encoding='utf-8') as f:
-        json.dump(spec, f, ensure_ascii=False, indent=2)
-
-    # gera mqh e exports
-    subprocess.check_call([sys.executable, os.path.join(root, 'gen_bridge.py'), '--spec', temp_spec, '--out', os.path.join(root, 'mqh')])
+    # Geração via opgen.py (interativo ou --all)
+    project_root = os.path.abspath(os.path.join(root, '..', '..'))  # .../alglib
+    print("\nGerando arquivos com opgen.py...")
+    # opgen próprio já implementa seleção interativa; se o usuário quiser tudo, pressione apenas ENTER
+    subprocess.check_call([sys.executable, os.path.join(root, 'opgen.py'), '--root', project_root])
     print('\nArquivos gerados:')
-    print(' - mqh/bridge_api.mqh')
-    print(' - bridge/exports_generated.cpp')
+    print(' - src/alglib_gpu/exports_ops_generated.cpp')
+    print(' - MQL5/Include/pipe/AlglibOps.mqh')
 
     # compilar DLL?
     ans = prompt('\nCompilar DLL agora? [S/n] ').strip().lower()
     if ans in ('', 's', 'y', 'yes'):
-        br = os.path.join(root, 'bridge')
-        build = os.path.join(br, 'build')
+        br = project_root
+        build = os.path.join(br, 'build-win')
         os.makedirs(build, exist_ok=True)
-        subprocess.check_call(['cmake', '-S', br, '-B', build, '-A', 'x64'])
+        try:
+            subprocess.check_call(['cmake', '-S', br, '-B', build, '-A', 'x64'])
+        except Exception:
+            # fallback: ambiente Unix/WSL
+            subprocess.check_call(['cmake', '-S', br, '-B', build])
         subprocess.check_call(['cmake', '--build', build, '--config', 'Release'])
-        print('DLL compilada em bridge/build/Release/bridge.dll')
+        print('DLL compilada em dist-wave/alglib_bridge.dll')
 
-    print('\nConcluído. Copie:')
-    print(' - bridge/build/Release/bridge.dll → MQL5/ Libraries')
-    print(' - mqh/bridge_api.mqh → MQL5/ Include/bridge')
+    print('\nConcluído. Copie (se não automatizado):')
+    print(' - dist-wave/alglib_bridge.dll → MQL5/ Libraries')
+    print(' - MQL5/Include/pipe/AlglibOps.mqh → MQL5/ Include/pipe')
 
 if __name__ == '__main__':
     main()
